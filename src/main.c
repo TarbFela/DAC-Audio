@@ -82,8 +82,8 @@ int main() {
     //populate the input buffer with something, idk???
     for(int i=0; i<STEREO_BUFFER_SIZE;i++) {
             outsignal[i] = (i%2) ?
-        0x03FFFFFF * sinf( 4*2*M_PI*(float)i / STEREO_BUFFER_SIZE) :
-        0x03FFFFFF * cosf( 5*2*M_PI*(float)i / STEREO_BUFFER_SIZE);
+        0x04000000 * sinf( 10*2*M_PI*(float)i / STEREO_BUFFER_SIZE) :
+        0x04000000 * cosf( 10*2*M_PI*(float)i / STEREO_BUFFER_SIZE);
        }
 
     // Init GPIO LED
