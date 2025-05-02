@@ -137,7 +137,7 @@ static void dma_double_buffer_init(pio_i2s* i2s, void (*dma_handler)(void)) {
 
     // Input channel triggers the DMA interrupt handler, hopefully these stay
     // in perfect sync with the output.
-    dma_channel_set_irq0_enabled(i2s->dma_ch_in_data, true);
+    dma_channel_set_irq0_enabled(i2s->dma_ch_out_data, true);
     irq_set_exclusive_handler(DMA_IRQ_0, dma_handler);
     irq_set_enabled(DMA_IRQ_0, true);
 

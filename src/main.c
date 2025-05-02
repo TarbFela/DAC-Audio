@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <stdint.h>
-#include <string.h>
 #include <stdbool.h>
 #include <math.h>
 #include "pico/stdlib.h"
@@ -11,33 +10,39 @@
 #include "hardware/i2c.h"
 #include "hardware/irq.h"
 #include "i2s.h"
-
-//#include "hardware/i2c.h"
 #include "hardware/adc.h"
 #include "pico/multicore.h"
 #include "pico/bootrom.h"
 
-//#include "ssd1306.h"
-
-#include "pico/stdlib.h"
-
-
-#define I2C_PORT i2c0
-#define I2C_SDA  4
-#define I2C_SCL  5
+#include "pitch_analysis.h"
+#include "adc_stream.h"
+#include "nco.h"
 
 #define LED_PIN 0
+
+#define ADC_GPIO_PIN 27 // pin 27, adc_1
+#define RESET_PIN 1
+int reset_pin_check() {
+    return ((sio_hw->gpio_in & (1<<RESET_PIN)) != 0);
+}
+
 
 static __attribute__((aligned(8))) pio_i2s i2s; /****Not sure... **/
 
 volatile int32_t outsignal[STEREO_BUFFER_SIZE];
 
+NCO_T *osc;
 static void process_audio(const int32_t* input, int32_t* output, size_t num_frames) {
     // Just copy the input to the output
-    uint32_t vol = adc_read() >> 9;
+    //uint32_t freq = adc_read() >> 7;
     for (size_t i = 0; i < num_frames * 2; i++) {
-        output[i] = vol * outsignal[i]; /** **CHANGED !!!! =input[i]*/
+        output[i] = outsignal[i]; /** **CHANGED !!!! =input[i]*/
     }
+    uint16_t adc_val = adc_read();
+    nco_set_frequency( osc,
+                       0.000005f * (float)adc_val
+            );
+    nco_get_samples_stereo(osc, outsignal, num_frames);
 }
 
 static void dma_i2s_in_handler(void) {
@@ -45,14 +50,14 @@ static void dma_i2s_in_handler(void) {
      * DMA is currently reading from, we can identify which buffer it has just
      * finished reading (the completion of which has triggered this interrupt).
      */
-    if (*(int32_t**)dma_hw->ch[i2s.dma_ch_in_ctrl].read_addr == i2s.input_buffer) {
+    if (*(int32_t**)dma_hw->ch[i2s.dma_ch_out_ctrl].read_addr == i2s.output_buffer) {
         // It is inputting to the second buffer so we can overwrite the first
         process_audio(i2s.input_buffer, i2s.output_buffer, AUDIO_BUFFER_FRAMES);
     } else {
         // It is currently inputting the first buffer, so we write to the second
         process_audio(&i2s.input_buffer[STEREO_BUFFER_SIZE], &i2s.output_buffer[STEREO_BUFFER_SIZE], AUDIO_BUFFER_FRAMES);
     }
-    dma_hw->ints0 = 1u << i2s.dma_ch_in_data;  // clear the IRQ
+    dma_hw->ints0 = 1u << i2s.dma_ch_out_data;  // clear the IRQ
 }
 
 
@@ -80,12 +85,6 @@ int main() {
     printf("System Clock: %lu\n", clock_get_hz(clk_sys));
     
     
-    //populate the input buffer with something, idk???
-    for(int i=0; i<STEREO_BUFFER_SIZE;i++) {
-            outsignal[i] = (i%2) ?
-        0x02000000 * sinf( 10*2*M_PI*(float)i / STEREO_BUFFER_SIZE) :
-        0x02000000 * cosf( 10*2*M_PI*(float)i / STEREO_BUFFER_SIZE);
-       }
 
     // Init GPIO LED
     gpio_init(LED_PIN);
@@ -93,21 +92,16 @@ int main() {
 
     // I2C Initialisation. Using it at 100Khz.
     /**** ALTERED:  88.2kHz **/
-    i2c_init(I2C_PORT, FS);
 
-    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
-    gpio_set_pulls(I2C_SDA, true, false); /**** pull down... I think*/
-    gpio_set_pulls(I2C_SCL, true, false);
-    gpio_set_drive_strength(I2C_SDA, GPIO_DRIVE_STRENGTH_12MA);
-    gpio_set_drive_strength(I2C_SCL, GPIO_DRIVE_STRENGTH_12MA);
-    gpio_set_slew_rate(I2C_SDA, GPIO_SLEW_RATE_FAST);
-    gpio_set_slew_rate(I2C_SCL, GPIO_SLEW_RATE_FAST);
 
 
     adc_init();
     adc_gpio_init(27);
     adc_select_input(27 - 26);
+
+    osc = init_nco(0.01, 0, 0.04);
+
+    nco_get_samples_stereo(osc, outsignal,AUDIO_BUFFER_FRAMES);
     
     
     // PROTOTYPE:       i2s_program_start_synched(pio0, &i2s_config_default, dma_i2s_in_handler, &i2s);

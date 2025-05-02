@@ -25,7 +25,7 @@
 #ifndef I2S_TEST_I2S_H
 #define I2S_TEST_I2S_H
 
-#define AUDIO_BUFFER_FRAMES 4800
+#define AUDIO_BUFFER_FRAMES 1200
 #define STEREO_BUFFER_SIZE  AUDIO_BUFFER_FRAMES * 2  // roughly 1ms, 48 L + R words
 
 typedef struct i2s_config {
