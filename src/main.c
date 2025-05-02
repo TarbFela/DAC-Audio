@@ -21,54 +21,36 @@
 
 #include "pico/stdlib.h"
 
-#include "ece486_nco.h"
+
+#define I2C_PORT i2c0
+#define I2C_SDA  4
+#define I2C_SCL  5
 
 #define LED_PIN 0
 
-
 static __attribute__((aligned(8))) pio_i2s i2s; /****Not sure... **/
-NCO_T *osc1;
 
 volatile int32_t outsignal[STEREO_BUFFER_SIZE];
 
-static void process_audio(const int32_t* input, int32_t* output, size_t num_frames, NCO_T *osc) {
-    float freq = (float)adc_read() / 4096;
-    for (size_t i = 0; i < num_frames; i++) {
-        uint32_t val = (uint32_t)(160000000.0f * sinf(freq * M_2_PI * i / num_frames));
-        output[2*i] = val;
-        output[2*i + 1] = val;
+static void process_audio(const int32_t* input, int32_t* output, size_t num_frames) {
+    // Just copy the input to the output
+    uint32_t vol = adc_read() >> 9;
+    for (size_t i = 0; i < num_frames * 2; i++) {
+        output[i] = vol * outsignal[i]; /** **CHANGED !!!! =input[i]*/
     }
-    //float f = (float)adc_read() * 0.00001f;
-    //nco_set_frequency(osc, f);
-    //nco_get_samples_dual_mono_int(osc, output, num_frames);
-    // left side
-    /*
-    for (size_t i = 0; i < num_frames; i++) {
-        output[2*i] = nco_get_samples(osc, );
-        // and right side...
-    }
-     */
-
-    // right side
-    /*
-    for (size_t i = 0; i < num_frames; i++) {
-        output[2*i + 1] = outsignal[i];
-    }
-     /**/
 }
 
 static void dma_i2s_in_handler(void) {
-    /* Previously, this was set up to check which buffer the input dma was using
-     * Now, we aren't dealing with any input dma, we just want to generate a signal
-     * So, we will figure out where the output dma is reading from instead
+    /* We're double buffering using chained TCBs. By checking which buffer the
+     * DMA is currently reading from, we can identify which buffer it has just
+     * finished reading (the completion of which has triggered this interrupt).
      */
-    // if reading from begging (&output_buffer[0]), write to middle i.e. buffer 2 (&output_buffer[STEREO_BUFF_SIZE])
-    if (*(int32_t**)dma_hw->ch[i2s.dma_ch_out_ctrl].write_addr == i2s.output_buffer) {
+    if (*(int32_t**)dma_hw->ch[i2s.dma_ch_in_ctrl].read_addr == i2s.input_buffer) {
         // It is inputting to the second buffer so we can overwrite the first
-        process_audio(i2s.input_buffer, &i2s.output_buffer[STEREO_BUFFER_SIZE], AUDIO_BUFFER_FRAMES, osc1);
+        process_audio(i2s.input_buffer, i2s.output_buffer, AUDIO_BUFFER_FRAMES);
     } else {
         // It is currently inputting the first buffer, so we write to the second
-        process_audio(&i2s.input_buffer[STEREO_BUFFER_SIZE], i2s.output_buffer, AUDIO_BUFFER_FRAMES, osc1);
+        process_audio(&i2s.input_buffer[STEREO_BUFFER_SIZE], &i2s.output_buffer[STEREO_BUFFER_SIZE], AUDIO_BUFFER_FRAMES);
     }
     dma_hw->ints0 = 1u << i2s.dma_ch_in_data;  // clear the IRQ
 }
@@ -76,14 +58,14 @@ static void dma_i2s_in_handler(void) {
 
 // FROM I2S.C:      const i2s_config i2s_config_default = {48000, 256, 32, 10, 6, 7, 8, true};
 /** **BECAUSE THE DAC IS L/R, WE NEED TO SEND DATA AT TWICE THE SPEED. THIS BRINGS US FROM 44.1kHz to 88.2kHz */
-#define FS  48000 //for oscilliscope-based testing, you'll likely have to reduce this significantly...
+#define FS  100000 //for oscilliscope-based testing, you'll likely have to reduce this significantly...
 /**** NOT SURE IF SCK SHOULD GO TO BCK OR SCK */
 const i2s_config i2s_config_PCM1502a = {
     FS,     //fs
     256,    //sck_mult
     32,     //bit_depth
-    10,     //sck_pin
-    6,      //data out pin
+    18,     //sck_pin
+    19,      //data out pin
     0,      //data in pin
     8,      //clock pin base
     true    //sck enable
@@ -100,24 +82,37 @@ int main() {
     
     //populate the input buffer with something, idk???
     for(int i=0; i<STEREO_BUFFER_SIZE;i++) {
-            outsignal[i] = 0;
+            outsignal[i] = (i%2) ?
+        0x02000000 * sinf( 10*2*M_PI*(float)i / STEREO_BUFFER_SIZE) :
+        0x02000000 * cosf( 10*2*M_PI*(float)i / STEREO_BUFFER_SIZE);
        }
 
     // Init GPIO LED
     gpio_init(LED_PIN);
     gpio_set_dir(LED_PIN, GPIO_OUT);
 
+    // I2C Initialisation. Using it at 100Khz.
+    /**** ALTERED:  88.2kHz **/
+    i2c_init(I2C_PORT, FS);
+
+    gpio_set_function(I2C_SDA, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_SCL, GPIO_FUNC_I2C);
+    gpio_set_pulls(I2C_SDA, true, false); /**** pull down... I think*/
+    gpio_set_pulls(I2C_SCL, true, false);
+    gpio_set_drive_strength(I2C_SDA, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(I2C_SCL, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_slew_rate(I2C_SDA, GPIO_SLEW_RATE_FAST);
+    gpio_set_slew_rate(I2C_SCL, GPIO_SLEW_RATE_FAST);
+
+
     adc_init();
     adc_gpio_init(27);
     adc_select_input(27 - 26);
-
-    osc1 = init_nco(adc_read(),0);
-    nco_set_amplitude(osc1, 100000000);
     
     
     // PROTOTYPE:       i2s_program_start_synched(pio0, &i2s_config_default, dma_i2s_in_handler, &i2s);
     // FROM I2S.C:      const i2s_config i2s_config_default = {48000, 256, 32, 10, 6, 7, 8, true};
-    i2s_program_start_output(pio0, &i2s_config_default, dma_i2s_in_handler, &i2s);
+    i2s_program_start_synched(pio0, &i2s_config_default, dma_i2s_in_handler, &i2s);
     
     
     while(1) {
