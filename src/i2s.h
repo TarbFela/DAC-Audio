@@ -75,4 +75,6 @@ extern const i2s_config i2s_config_default;
 void i2s_program_start_slaved(PIO pio, const i2s_config* config, void (*dma_handler)(void), pio_i2s* i2s);
 void i2s_program_start_synched(PIO pio, const i2s_config* config, void (*dma_handler)(void), pio_i2s* i2s);
 
+void i2s_program_start_output(PIO pio, const i2s_config* config, void (*dma_handler)(void), pio_i2s* i2s);
+
 #endif  // I2S_TEST_I2S_H
