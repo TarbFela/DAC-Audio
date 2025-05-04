@@ -20,11 +20,50 @@
 
 #define LED_PIN 0
 
-#define ADC_GPIO_PIN 27 // pin 27, adc_1
+#define ADC_GPIO_PIN 28
 #define RESET_PIN 1
 int reset_pin_check() {
     return ((sio_hw->gpio_in & (1<<RESET_PIN)) != 0);
 }
+
+// 20ms lets us see (theoretically) 50Hz
+// 15kHz gives us enough granularity to differentiate higher pitches
+#define YIN_WINDOW_WIDTH_MS 20 // how many ms of audio do we want to analyze? See Nyquist freq sampling.
+#define ADC_SAMPLE_RATE_HZ 15000 // what's our sample rate? See Nyquist time sampling
+#define AUDIO_BUFFER_SIZE          (YIN_WINDOW_WIDTH_MS * ADC_SAMPLE_RATE_HZ / 1000)
+
+
+// ————————————————————————————————————————————————————————————————————————————————————————————————
+//                      MULTICORE ENTRY
+// ————————————————————————————————————————————————————————————————————————————————————————————————
+#define MULTICORE_GOOD_FLAG 0xBEEF
+void core1_entry() {
+
+    // initialize...
+    multicore_fifo_push_blocking(MULTICORE_GOOD_FLAG); // tell main that we're good
+
+    FREQ_ANALYZER_T *fa_s = (FREQ_ANALYZER_T *)multicore_fifo_pop_blocking(); // get access to the freq analyzer struct
+
+    int frequency, volume = 0;
+    int i = 0;
+    while(1) {
+        multicore_fifo_pop_blocking();
+        volume = get_peak_volume(fa_s);
+
+        calculate_yin(fa_s);
+        if(volume > 22) {
+            frequency = dominant_freq(fa_s);
+        }
+        else {
+            frequency = 0;
+        }
+        multicore_fifo_push_blocking((uint32_t)frequency); // tell main to continue
+        i += 1;
+    }
+
+
+}
+
 
 
 static __attribute__((aligned(8))) pio_i2s i2s; /****Not sure... **/
@@ -38,10 +77,10 @@ static void process_audio(const int32_t* input, int32_t* output, size_t num_fram
     for (size_t i = 0; i < num_frames * 2; i++) {
         output[i] = outsignal[i]; /** **CHANGED !!!! =input[i]*/
     }
-    uint16_t adc_val = adc_read();
-    nco_set_frequency( osc,
-                       0.000005f * (float)adc_val
-            );
+//    uint16_t adc_val = adc_read();
+//    nco_set_frequency( osc,
+//                       0.000005f * (float)adc_val
+//            );
     nco_get_samples_stereo(osc, outsignal, num_frames);
 }
 
@@ -94,23 +133,42 @@ int main() {
     /**** ALTERED:  88.2kHz **/
 
 
+//    // ADC
+//    adc_init();
+//    adc_gpio_init(27);
+//    adc_select_input(27 - 26);
 
-    adc_init();
-    adc_gpio_init(27);
-    adc_select_input(27 - 26);
-
+    // NCO
     osc = init_nco(0.01, 0, 0.04);
-
     nco_get_samples_stereo(osc, outsignal,AUDIO_BUFFER_FRAMES);
-    
-    
-    // PROTOTYPE:       i2s_program_start_synched(pio0, &i2s_config_default, dma_i2s_in_handler, &i2s);
-    // FROM I2S.C:      const i2s_config i2s_config_default = {48000, 256, 32, 10, 6, 7, 8, true};
+
+    // RESET PIN INIT
+    gpio_init(RESET_PIN);
+    gpio_pull_down(RESET_PIN);
+
+    // AUDIO IN AND PITCH DETECTION
+    adc_stream_t *adc_stream = init_adc_stream(ADC_GPIO_PIN, ADC_SAMPLE_RATE_HZ, AUDIO_BUFFER_SIZE);
+    sleep_ms(1000);
+
+    FREQ_ANALYZER_T *fa_s;
+    fa_s = init_freq_analyzer(adc_stream->buffer, adc_stream->buffer_size, adc_stream->adc_sample_rate, 50);
+    multicore_launch_core1(core1_entry);
+    uint32_t mcfifo_val = multicore_fifo_pop_blocking();
+    if(mcfifo_val != MULTICORE_GOOD_FLAG) printf("Failed to initialize core 1.\n");
+    multicore_fifo_push_blocking((uint32_t)fa_s);
+    sleep_ms(1000);
+
+    // AUDIO OUTPUT BEGINS
     i2s_program_start_synched(pio0, &i2s_config_default, dma_i2s_in_handler, &i2s);
-    
-    
+
+
+    int frequency = -1;
     while(1) {
-        
+        audio_capture_no_blocking(adc_stream);
+        dma_channel_wait_for_finish_blocking(adc_stream->dma_channel); //wait for end of capture
+        multicore_fifo_push_blocking(0); // tell other core to analyze data
+        frequency = (int)multicore_fifo_pop_blocking(); // wait for end of analysis (any interrupts will be exucuted by this core, so that works out!
+        if(frequency > 0) nco_set_frequency(osc, 2*(float)frequency / (float)FS);
     }
 
 }

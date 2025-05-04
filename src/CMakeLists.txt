@@ -16,7 +16,9 @@ pico_sdk_init()
 add_executable(audiotest
 	main.c 
 	i2s.c
-		nco.c
+	nco.c
+	adc_stream.c
+	pitch_analysis.c
 
 )
 pico_generate_pio_header(audiotest ${CMAKE_CURRENT_LIST_DIR}/i2s.pio)
